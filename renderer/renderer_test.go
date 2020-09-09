@@ -2,6 +2,7 @@ package renderer
 
 import (
 	"bytes"
+	"fmt"
 	"io/ioutil"
 	"strings"
 	"testing"
@@ -29,5 +30,7 @@ func TestValidDocument(t *testing.T) {
 	for _, desc := range result.Errors() {
 		errors = append(errors, desc.String())
 	}
-	require.True(t, result.Valid(), strings.Join(errors, "\n"))
+	require.NoError(t, ioutil.WriteFile("testdata/actual.json", buffer.Bytes(), 0644))
+	require.True(t, result.Valid(), buffer.String(), strings.Join(errors, "\n"))
+	fmt.Println(buffer.String())
 }

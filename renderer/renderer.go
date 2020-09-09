@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"reflect"
 
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/ast"
@@ -17,17 +18,17 @@ var _ renderer.Renderer = &ADFRenderer{}
 
 // ADFRenderer implements goldmark.Renderer
 type ADFRenderer struct {
-	document     *Node          // Root node
-	blockContext blockNodeStack // Track where we are in the structure of the document
+	document *Node          // Root node
+	context  blockNodeStack // Track where we are in the structure of the document
 }
 
 type Node struct {
-	Type       Type        `json:"type"`
-	Version    int         `json:"version,omitempty"`
-	Attributes *Attributes `json:"attrs,omitempty"`
-	Content    []*Node     `json:"content,omitempty"`
-	Marks      []Mark      `json:"marks,omitempty"`
-	Text       string      `json:"text,omitempty"`
+	Type       NodeType     `json:"type"`
+	Version    int          `json:"version,omitempty"`
+	Attributes *Attributes  `json:"attrs,omitempty"`
+	Content    []*Node      `json:"content,omitempty"`
+	Marks      []MarkStruct `json:"marks,omitempty"`
+	Text       string       `json:"text,omitempty"`
 }
 
 func (n *Node) AddContent(c *Node) {
@@ -35,39 +36,59 @@ func (n *Node) AddContent(c *Node) {
 }
 
 type Attributes struct {
-	Width  float32 `json:"width,omitempty"`
-	Layout Layout  `json:"layout,omitempty"`
-	Level  int     `json:"level,omitempty"`
+	Width    float32 `json:"width,omitempty"`    // For media single
+	Layout   Layout  `json:"layout,omitempty"`   // For media single
+	Level    int     `json:"level,omitempty"`    // For headings
+	Language string  `json:"language,omitempty"` // For fenced code blocks
+}
+
+type MarkStruct struct {
+	Type       Mark            `json:"type,omitempty"`
+	Attributes *MarkAttributes `json:"attrs,omitempty"`
+}
+
+type MarkAttributes struct {
+	Href  string `json:"href,omitempty"`  // For links
+	Title string `json:"title,omitempty"` // For links
 }
 
 // Type represents the type of a node
-type Type string
+type NodeType string
 
 // Node types
 const (
-	TypeNone        = "none"
-	TypeBlockquote  = "blockquote"
-	TypeBulletList  = "bulletList"
-	TypeCodeBlock   = "codeBlock"
-	TypeHeading     = "heading"
-	TypeMediaGroup  = "mediaGroup"
-	TypeMediaSingle = "mediaSingle"
-	TypeOrderedList = "orderedList"
-	TypePanel       = "panel"
-	TypeParagraph   = "paragraph"
-	TypeRule        = "rule"
-	TypeTable       = "table"
-	TypeListItem    = "listItem"
-	TypeMedia       = "media"
-	TypeTableCell   = "table_cell"
-	TypeTableHeader = "table_header"
-	TypeTableRow    = "table_row"
-	TypeEmoji       = "emoji"
-	TypeHardBreak   = "hardBreak"
-	TypeInlineCard  = "inlineCard"
-	TypeMention     = "mention"
-	TypeText        = "text"
+	NodeTypeNone        = "none"
+	NodeTypeBlockquote  = "blockquote"
+	NodeTypeBulletList  = "bulletList"
+	NodeTypeCodeBlock   = "codeBlock"
+	NodeTypeHeading     = "heading"
+	NodeTypeMediaGroup  = "mediaGroup"
+	NodeTypeMediaSingle = "mediaSingle"
+	NodeTypeOrderedList = "orderedList"
+	NodeTypePanel       = "panel"
+	NodeTypeParagraph   = "paragraph"
+	NodeTypeRule        = "rule"
+	NodeTypeTable       = "table"
+	NodeTypeListItem    = "listItem"
+	NodeTypeMedia       = "media"
+	NodeTypeTableCell   = "table_cell"
+	NodeTypeTableHeader = "table_header"
+	NodeTypeTableRow    = "table_row"
+	NodeTypeEmoji       = "emoji"
+	NodeTypeHardBreak   = "hardBreak"
+	NodeTypeInlineCard  = "inlineCard"
+	NodeTypeMention     = "mention"
+	NodeTypeText        = "text"
 )
+
+func inlineType(t NodeType) bool {
+	switch t {
+	case NodeTypeEmoji, NodeTypeHardBreak, NodeTypeInlineCard, NodeTypeMention, NodeTypeText:
+		return true
+	default:
+		return false
+	}
+}
 
 type Layout string
 
@@ -83,28 +104,61 @@ const (
 )
 
 type blockNodeStack struct {
-	data []*Node
+	data          []*Node
+	ignoreBlocks  bool    // ADF does not support some forms of nesting that markdown does, so we sometimes ignore non-paragraph block nodes
+	ignoredBlocks []*Node // Contains the root block and its children when a block node can only contain content
 }
 
-func (s *blockNodeStack) Push(node *Node) {
-	fmt.Printf("Adding node %+v\n", *node)
+func (s *blockNodeStack) PushContent(node *Node) {
+	s.PeekBlockNode().AddContent(node)
+}
+
+func (s *blockNodeStack) PushBlockNode(node *Node) {
+	if s.ignoreBlocks {
+		s.ignoredBlocks = append(s.ignoredBlocks, node)
+
+		// Paragraphs are the only block node type that can still be added
+		if node.Type != NodeTypeParagraph {
+			return
+		}
+	}
+
 	// Update the actual document
-	s.data[len(s.data)-1].AddContent(node)
+	s.PushContent(node)
 	// Update the context stack
 	s.data = append(s.data, node)
 }
 
 // Intentionally unsafe because we should never peek an empty stack
-func (s *blockNodeStack) Peek() *Node {
+func (s *blockNodeStack) PeekBlockNode() *Node {
 	return s.data[len(s.data)-1]
 }
 
 // Intentionally unsafe because we should never pop an empty stack
-func (s *blockNodeStack) Pop() *Node {
+func (s *blockNodeStack) PopBlockNode() *Node {
 	last := len(s.data) - 1
 	node := s.data[last]
+
+	if s.ignoreBlocks {
+		s.ignoredBlocks = s.ignoredBlocks[:len(s.ignoredBlocks)-1]
+		if len(s.ignoredBlocks) == 0 {
+			s.ignoreBlocks = false
+		} else if node.Type != NodeTypeParagraph {
+			return node
+		}
+	}
+
 	s.data = s.data[:last]
 	return node
+}
+
+func (s *blockNodeStack) IgnoreNestedBlocks(node *Node) {
+	if s.ignoreBlocks {
+		return
+	}
+
+	s.ignoreBlocks = true
+	s.ignoredBlocks = append(s.ignoredBlocks, node)
 }
 
 // Mark represents a text formatting directive
@@ -129,7 +183,7 @@ func NewRenderer() *ADFRenderer {
 	}
 	return &ADFRenderer{
 		document: &root,
-		blockContext: blockNodeStack{
+		context: blockNodeStack{
 			data: []*Node{&root},
 		},
 	}
@@ -146,188 +200,178 @@ func Render(w io.Writer, source []byte) error {
 		goldmark.WithRenderer(NewRenderer()),
 	)
 
-	if err := gm.Convert(source, w); err != nil {
-		return err
-	}
-
-	return nil
+	return gm.Convert(source, w)
 }
 
-func astToADFType(n ast.Node) Type {
+func astToADFType(n ast.Node) NodeType {
 	switch n.(type) {
 	case *ast.Document:
 	case *ast.Paragraph,
 		*ast.TextBlock:
-		return TypeParagraph
+		return NodeTypeParagraph
 	case *ast.Heading:
-		return TypeHeading
+		return NodeTypeHeading
 	case *ast.Text,
 		*ast.String,
 		*extAst.Strikethrough,
-		*ast.Emphasis:
-		return TypeText
-	case *ast.CodeSpan,
-		*ast.CodeBlock,
+		*ast.Emphasis,
+		*ast.CodeSpan,
+		*ast.Link:
+		return NodeTypeText
+	case *ast.CodeBlock,
 		*ast.FencedCodeBlock:
-		return TypeCodeBlock
+		return NodeTypeCodeBlock
 	case *ast.ThematicBreak:
+		return NodeTypeRule
 	case *ast.Blockquote:
-		return TypeBlockquote
+		return NodeTypeBlockquote
 	case *ast.List:
 		if n.(*ast.List).IsOrdered() {
-			return TypeOrderedList
+			return NodeTypeOrderedList
 		}
-		return TypeBulletList
+		return NodeTypeBulletList
 	case *ast.ListItem:
-		return TypeListItem
-	case *ast.Link:
+		return NodeTypeListItem
 	case *ast.Image:
-		return TypeMedia
+		return NodeTypeMedia
 	case *ast.HTMLBlock:
 	case *ast.RawHTML:
 	case *extAst.Table:
-		return TypeTable
+		return NodeTypeTable
 	case *extAst.TableHeader:
-		return TypeTableHeader
+		return NodeTypeTableHeader
 	case *extAst.TableRow:
-		return TypeTableRow
+		return NodeTypeTableRow
 	case *extAst.TableCell:
-		return TypeTableCell
+		return NodeTypeTableCell
 	}
 
-	return TypeNone
+	return NodeTypeNone
 }
 
-func (r *ADFRenderer) renderSingle(w io.Writer, source []byte, n ast.Node, entering bool) ast.WalkStatus {
+func (r *ADFRenderer) walkNode(source []byte, n ast.Node, entering bool) ast.WalkStatus {
+	fmt.Printf("Node: %s, entering: %v, value: %q, children: %d\n", reflect.TypeOf(n).String(), entering, string(n.Text(source)), n.ChildCount())
+
 	if !entering {
-		if astToADFType(n) == r.blockContext.Peek().Type {
-			r.blockContext.Pop()
+		if !inlineType(astToADFType(n)) {
+			r.context.PopBlockNode()
 		}
 		return ast.WalkContinue
 	}
 
 	adfNode := &Node{Type: astToADFType(n)}
 
-	switch n.(type) {
+	switch ntype := n.(type) {
 	case *ast.Document:
-		fmt.Printf("Node: %s, entering: %v, value: %v, children: %d\n", "*ast.Document", entering, string(n.Text(source)), n.ChildCount())
-	case *ast.TextBlock:
-		r.blockContext.Push(adfNode)
-		fmt.Printf("Node: %s, entering: %v, value: %v, children: %d\n", "*ast.TextBlock", entering, string(n.Text(source)), n.ChildCount())
-		//r.paragraph(tnode, entering)
-	case *ast.Paragraph:
-		r.blockContext.Push(adfNode)
-		fmt.Printf("Node: %s, entering: %v, value: %v, children: %d\n", "*ast.Paragraph", entering, string(n.Text(source)), n.ChildCount())
-		//r.paragraph(tnode, entering)
+		// Nothing to do, the root ADF node is fixed.
+
+	case *ast.Paragraph,
+		*ast.TextBlock, // Untested
+		*ast.List,
+		*ast.ListItem,
+		*ast.ThematicBreak,
+		*ast.CodeBlock: // Untested
+		r.context.PushBlockNode(adfNode)
+
+	case *ast.Blockquote:
+		r.context.PushBlockNode(adfNode)
+
+		// ADF only supports paragraphs inside block quotes, no nested block quotes
+		r.context.IgnoreNestedBlocks(adfNode)
+
 	case *ast.Heading:
 		adfNode.Attributes = &Attributes{
 			Level: n.(*ast.Heading).Level,
 		}
-		r.blockContext.Push(adfNode)
-		fmt.Printf("Node: %s, entering: %v, value: %v, children: %d\n", "*ast.Heading", entering, string(n.Text(source)), n.ChildCount())
-		// if entering {
-		// 	children := r.renderChildren(source, n)
-		// 	r.header(tnode, children)
-		// }
-		// return ast.WalkSkipChildren
-	case *ast.Text:
-		fmt.Printf("Node: %s, entering: %v, value: %v, children: %d\n", "*ast.Text", entering, string(n.Text(source)), n.ChildCount())
+		r.context.PushBlockNode(adfNode)
+
+	case *ast.Text,
+		*ast.String: // Untested
 		adfNode.Text = string(n.Text(source))
 		if len(adfNode.Text) == 0 {
 			// TODO: Uh what's happening here? Not sure why goldmark is splitting up paragraph text in this way.
 			adfNode.Text = " "
 		}
-		r.blockContext.Peek().AddContent(adfNode)
-		// r.normalText(tnode, source, entering)
-	case *ast.String:
-		fmt.Printf("Node: %s, entering: %v, value: %v, children: %d\n", "*ast.String", entering, string(n.Text(source)), n.ChildCount())
-		// r.string(tnode, source, entering)
+		r.context.PushContent(adfNode)
+
 	case *ast.CodeSpan:
-		fmt.Printf("Node: %s, entering: %v, value: %v, children: %d\n", "*ast.CodeSpan", entering, string(n.Text(source)), n.ChildCount())
-		// if entering {
-		// 	r.codeSpan(tnode, source)
-		// }
-		// return ast.WalkSkipChildren
+		adfNode.Text = string(n.Text(source))
+		adfNode.Marks = []MarkStruct{{Type: MarkCode}}
+		r.context.PushContent(adfNode)
+		return ast.WalkSkipChildren
+
 	case *extAst.Strikethrough:
-		fmt.Printf("Node: %s, entering: %v, value: %v, children: %d\n", "*extAst.Strikethrough", entering, string(n.Text(source)), n.ChildCount())
-		// if entering {
-		// 	children := r.renderChildren(source, n)
-		// 	r.strikeThrough(children)
-		// }
-		// return ast.WalkSkipChildren
+		adfNode.Text = string(n.Text(source))
+		adfNode.Marks = []MarkStruct{{Type: MarkStrike}}
+		r.context.PushContent(adfNode)
+		return ast.WalkSkipChildren
+
 	case *ast.Emphasis:
-		fmt.Printf("Node: %s, entering: %v, value: %v, children: %d\n", "*ast.Emphasis", entering, string(n.Text(source)), n.ChildCount())
-		// if entering {
-		// 	children := r.renderChildren(source, n)
-		// 	r.emphasis(tnode, children)
-		// }
-		// return ast.WalkSkipChildren
-	case *ast.ThematicBreak:
-		fmt.Printf("Node: %s, entering: %v, value: %v, children: %d\n", "*ast.ThematicBreak", entering, string(n.Text(source)), n.ChildCount())
-		// if entering {
-		// 	r.hrule()
-		// }
-	case *ast.Blockquote:
-		fmt.Printf("Node: %s, entering: %v, value: %v, children: %d\n", "*ast.Blockquote", entering, string(n.Text(source)), n.ChildCount())
-		// r.blockQuote(entering)
-	case *ast.List:
-		r.blockContext.Push(adfNode)
-		fmt.Printf("Node: %s, entering: %v, value: %v, children: %d\n", "*ast.List", entering, string(n.Text(source)), n.ChildCount())
-		// r.list(tnode, entering)
-	case *ast.ListItem:
-		r.blockContext.Push(adfNode)
-		fmt.Printf("Node: %s, entering: %v, value: %v, children: %d\n", "*ast.ListItem", entering, string(n.Text(source)), n.ChildCount())
-		// r.item(tnode, entering, source)
+		adfNode.Text = string(n.Text(source))
+		if ntype.Level == 1 {
+			adfNode.Marks = []MarkStruct{{Type: MarkEm}}
+		} else if ntype.Level >= 2 {
+			adfNode.Marks = []MarkStruct{{Type: MarkStrong}}
+		}
+		r.context.PushContent(adfNode)
+		return ast.WalkSkipChildren
+
 	case *ast.Link:
-		fmt.Printf("Node: %s, entering: %v, value: %v, children: %d\n", "*ast.Link", entering, string(n.Text(source)), n.ChildCount())
-		// if entering {
-		// 	children := r.renderChildren(source, n)
-		// 	r.link(tnode.Destination, tnode.Title, children)
-		// }
-		// return ast.WalkSkipChildren
+		adfNode.Text = string(n.Text(source))
+		adfNode.Marks = []MarkStruct{{
+			Type: MarkLink,
+			Attributes: &MarkAttributes{
+				Href:  string(ntype.Destination),
+				Title: string(ntype.Title),
+			},
+		}}
+		r.context.PushContent(adfNode)
+		return ast.WalkSkipChildren
+
 	case *ast.Image:
-		fmt.Printf("Node: %s, entering: %v, value: %v, children: %d\n", "*ast.Image", entering, string(n.Text(source)), n.ChildCount())
 		// if entering {
 		// 	children := r.renderChildren(source, n)
 		// 	r.image(tnode.Destination, tnode.Title, children)
 		// }
 		// return ast.WalkSkipChildren
-	case *ast.CodeBlock:
-		fmt.Printf("Node: %s, entering: %v, value: %v, children: %d\n", "*ast.CodeBlock", entering, string(n.Text(source)), n.ChildCount())
-		// if entering {
-		// 	r.blockCode(tnode, source)
-		// }
+
 	case *ast.FencedCodeBlock:
-		fmt.Printf("Node: %s, entering: %v, value: %v, children: %d\n", "*ast.FencedCodeBlock", entering, string(n.Text(source)), n.ChildCount())
-		// if entering {
-		// 	r.blockCode(tnode, source)
-		// }
+		adfNode.Attributes = &Attributes{
+			Language: string(ntype.Language(source)),
+		}
+		var content string
+		lines := ntype.Lines()
+		for i := 0; i < lines.Len(); i++ {
+			segment := lines.At(i)
+			content += string(segment.Value(source))
+		}
+		adfNode.AddContent(&Node{
+			Type: NodeTypeText,
+			Text: content,
+		})
+		r.context.PushBlockNode(adfNode)
+		return ast.WalkSkipChildren
+
 	case *ast.HTMLBlock:
-		fmt.Printf("Node: %s, entering: %v, value: %v, children: %d\n", "*ast.HTMLBlock", entering, string(n.Text(source)), n.ChildCount())
 		// if entering {
 		// 	r.blockHtml(tnode, source)
 		// }
 	case *ast.RawHTML:
-		fmt.Printf("Node: %s, entering: %v, value: %v, children: %d\n", "*ast.RawHTML", entering, string(n.Text(source)), n.ChildCount())
 		// if entering {
 		// 	r.rawHtml(tnode, source)
 		// }
 		// return ast.WalkSkipChildren
 	case *extAst.Table:
-		fmt.Printf("Node: %s, entering: %v, value: %v, children: %d\n", "*extAst.Table", entering, string(n.Text(source)), n.ChildCount())
 		// r.table(tnode, entering)
 	case *extAst.TableHeader:
-		fmt.Printf("Node: %s, entering: %v, value: %v, children: %d\n", "*extAst.TableHeader", entering, string(n.Text(source)), n.ChildCount())
 		// if entering {
 		// 	r.tableIsHeader = true
 		// }
 	case *extAst.TableRow:
-		fmt.Printf("Node: %s, entering: %v, value: %v, children: %d\n", "*extAst.TableRow", entering, string(n.Text(source)), n.ChildCount())
 		// if entering {
 		// 	r.tableIsHeader = false
 		// }
 	case *extAst.TableCell:
-		fmt.Printf("Node: %s, entering: %v, value: %v, children: %d\n", "*extAst.TableCell", entering, string(n.Text(source)), n.ChildCount())
 		// if entering {
 		// 	children := r.renderChildren(source, n)
 		// 	if r.tableIsHeader {
@@ -341,28 +385,24 @@ func (r *ADFRenderer) renderSingle(w io.Writer, source []byte, n ast.Node, enter
 		panic("unknown type" + n.Kind().String())
 	}
 
-	// if !entering {
-	// 	r.buf.WriteTo(writer)
-	// 	r.buf.Reset()
-	// 	r.buf = bytes.NewBuffer(nil)
-	// }
-
 	return ast.WalkContinue
 }
 
 // Render implements goldmark.Renderer interface.
 func (r *ADFRenderer) Render(w io.Writer, source []byte, n ast.Node) error {
 	for current := n.FirstChild(); current != nil; current = current.NextSibling() {
-		ast.Walk(current, func(current ast.Node, entering bool) (ast.WalkStatus, error) {
-			return r.renderSingle(w, source, current, entering), nil
+		err := ast.Walk(current, func(current ast.Node, entering bool) (ast.WalkStatus, error) {
+			return r.walkNode(source, current, entering), nil
 		})
+		if err != nil {
+			return err
+		}
 	}
 
 	b, err := json.MarshalIndent(r.document, "", "  ")
 	if err != nil {
 		return err
 	}
-	fmt.Println(string(b))
 	w.Write(b)
 
 	return nil
