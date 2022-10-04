@@ -52,7 +52,7 @@ type MarkAttributes struct {
 	Title string `json:"title,omitempty"` // For links
 }
 
-// Type represents the type of a node
+// NodeType represents the type of a node
 type NodeType string
 
 // Node types
@@ -203,8 +203,8 @@ func Render(w io.Writer, source []byte) error {
 	return gm.Convert(source, w)
 }
 
-func astToADFType(n ast.Node) NodeType {
-	switch n.(type) {
+func astToADFType(node ast.Node) NodeType {
+	switch n := node.(type) {
 	case *ast.Document:
 	case *ast.Paragraph,
 		*ast.TextBlock:
@@ -226,7 +226,7 @@ func astToADFType(n ast.Node) NodeType {
 	case *ast.Blockquote:
 		return NodeTypeBlockquote
 	case *ast.List:
-		if n.(*ast.List).IsOrdered() {
+		if n.IsOrdered() {
 			return NodeTypeOrderedList
 		}
 		return NodeTypeBulletList
@@ -249,19 +249,19 @@ func astToADFType(n ast.Node) NodeType {
 	return NodeTypeNone
 }
 
-func (r *ADFRenderer) walkNode(source []byte, n ast.Node, entering bool) ast.WalkStatus {
-	fmt.Printf("Node: %s, entering: %v, value: %q, children: %d\n", reflect.TypeOf(n).String(), entering, string(n.Text(source)), n.ChildCount())
+func (r *ADFRenderer) walkNode(source []byte, node ast.Node, entering bool) ast.WalkStatus {
+	fmt.Printf("Node: %s, entering: %v, value: %q, children: %d\n", reflect.TypeOf(node).String(), entering, string(node.Text(source)), node.ChildCount())
 
 	if !entering {
-		if !inlineType(astToADFType(n)) {
+		if !inlineType(astToADFType(node)) {
 			r.context.PopBlockNode()
 		}
 		return ast.WalkContinue
 	}
 
-	adfNode := &Node{Type: astToADFType(n)}
+	adfNode := &Node{Type: astToADFType(node)}
 
-	switch ntype := n.(type) {
+	switch n := node.(type) {
 	case *ast.Document:
 		// Nothing to do, the root ADF node is fixed.
 
@@ -281,7 +281,7 @@ func (r *ADFRenderer) walkNode(source []byte, n ast.Node, entering bool) ast.Wal
 
 	case *ast.Heading:
 		adfNode.Attributes = &Attributes{
-			Level: n.(*ast.Heading).Level,
+			Level: n.Level,
 		}
 		r.context.PushBlockNode(adfNode)
 
@@ -308,9 +308,9 @@ func (r *ADFRenderer) walkNode(source []byte, n ast.Node, entering bool) ast.Wal
 
 	case *ast.Emphasis:
 		adfNode.Text = string(n.Text(source))
-		if ntype.Level == 1 {
+		if n.Level == 1 {
 			adfNode.Marks = []MarkStruct{{Type: MarkEm}}
-		} else if ntype.Level >= 2 {
+		} else if n.Level >= 2 {
 			adfNode.Marks = []MarkStruct{{Type: MarkStrong}}
 		}
 		r.context.PushContent(adfNode)
@@ -321,8 +321,8 @@ func (r *ADFRenderer) walkNode(source []byte, n ast.Node, entering bool) ast.Wal
 		adfNode.Marks = []MarkStruct{{
 			Type: MarkLink,
 			Attributes: &MarkAttributes{
-				Href:  string(ntype.Destination),
-				Title: string(ntype.Title),
+				Href:  string(n.Destination),
+				Title: string(n.Title),
 			},
 		}}
 		r.context.PushContent(adfNode)
@@ -337,10 +337,10 @@ func (r *ADFRenderer) walkNode(source []byte, n ast.Node, entering bool) ast.Wal
 
 	case *ast.FencedCodeBlock:
 		adfNode.Attributes = &Attributes{
-			Language: string(ntype.Language(source)),
+			Language: string(n.Language(source)),
 		}
 		var content string
-		lines := ntype.Lines()
+		lines := n.Lines()
 		for i := 0; i < lines.Len(); i++ {
 			segment := lines.At(i)
 			content += string(segment.Value(source))
@@ -403,11 +403,10 @@ func (r *ADFRenderer) Render(w io.Writer, source []byte, n ast.Node) error {
 	if err != nil {
 		return err
 	}
-	w.Write(b)
-
-	return nil
+	_, err = w.Write(b)
+	return err
 }
 
 func (*ADFRenderer) AddOptions(...renderer.Option) {
-	//panic("No options for ADF renderer")
+	// panic("No options for ADF renderer")
 }
