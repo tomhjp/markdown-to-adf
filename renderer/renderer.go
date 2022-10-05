@@ -285,8 +285,20 @@ func (r *ADFRenderer) walkNode(source []byte, n ast.Node, entering bool) ast.Wal
 		}
 		r.context.PushBlockNode(adfNode)
 
-	case *ast.Text,
-		*ast.String: // Untested
+	case *ast.Text:
+		adfNode.Text = string(n.Text(source))
+		if len(adfNode.Text) == 0 {
+			// TODO: Uh what's happening here? Not sure why goldmark is splitting up paragraph text in this way.
+			adfNode.Text = " "
+		}
+		r.context.PushContent(adfNode)
+
+		if n.HardLineBreak() {
+			lineBreak := &Node{Type: NodeTypeHardBreak}
+			r.context.PushContent(lineBreak)
+		}
+
+	case *ast.String: // Untested
 		adfNode.Text = string(n.Text(source))
 		if len(adfNode.Text) == 0 {
 			// TODO: Uh what's happening here? Not sure why goldmark is splitting up paragraph text in this way.
