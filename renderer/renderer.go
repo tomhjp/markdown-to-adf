@@ -83,7 +83,7 @@ const (
 
 func inlineType(t NodeType) bool {
 	switch t {
-	case NodeTypeEmoji, NodeTypeHardBreak, NodeTypeInlineCard, NodeTypeMention, NodeTypeText:
+	case NodeTypeNone, NodeTypeEmoji, NodeTypeHardBreak, NodeTypeInlineCard, NodeTypeMention, NodeTypeText:
 		return true
 	default:
 		return false
