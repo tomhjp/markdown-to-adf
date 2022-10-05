@@ -2,9 +2,7 @@ package renderer
 
 import (
 	"encoding/json"
-	"fmt"
 	"io"
-	"reflect"
 
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/ast"
@@ -250,7 +248,7 @@ func astToADFType(n ast.Node) NodeType {
 }
 
 func (r *ADFRenderer) walkNode(source []byte, n ast.Node, entering bool) ast.WalkStatus {
-	fmt.Printf("Node: %s, entering: %v, value: %q, children: %d\n", reflect.TypeOf(n).String(), entering, string(n.Text(source)), n.ChildCount())
+	// fmt.Printf("Node: %s, entering: %v, value: %q, children: %d\n", reflect.TypeOf(n).String(), entering, string(n.Text(source)), n.ChildCount())
 
 	if !entering {
 		if !inlineType(astToADFType(n)) {
@@ -409,5 +407,5 @@ func (r *ADFRenderer) Render(w io.Writer, source []byte, n ast.Node) error {
 }
 
 func (*ADFRenderer) AddOptions(...renderer.Option) {
-	//panic("No options for ADF renderer")
+	// panic("No options for ADF renderer")
 }
