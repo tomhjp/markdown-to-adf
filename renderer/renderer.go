@@ -328,6 +328,18 @@ func (r *ADFRenderer) walkNode(source []byte, n ast.Node, entering bool) ast.Wal
 		r.context.PushContent(adfNode)
 		return ast.WalkSkipChildren
 
+	case *ast.AutoLink:
+		adfNode.Type = NodeTypeText
+		adfNode.Text = string(n.URL(source))
+		adfNode.Marks = []MarkStruct{{
+			Type: MarkLink,
+			Attributes: &MarkAttributes{
+				Href: string(n.URL(source)),
+			},
+		}}
+		r.context.PushContent(adfNode)
+		return ast.WalkSkipChildren
+
 	case *ast.Image:
 		// if entering {
 		// 	children := r.renderChildren(source, n)
@@ -382,7 +394,7 @@ func (r *ADFRenderer) walkNode(source []byte, n ast.Node, entering bool) ast.Wal
 		// }
 		// return ast.WalkSkipChildren
 	default:
-		panic("unknown type" + n.Kind().String())
+		panic("unknown type " + n.Kind().String())
 	}
 
 	return ast.WalkContinue
